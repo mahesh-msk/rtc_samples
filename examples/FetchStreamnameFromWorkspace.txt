@@ -1,0 +1,185 @@
+package com.bosch.de.istar.ccc.ui;
+
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+
+import org.eclipse.core.resources.IResource;
+import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.preferences.IEclipsePreferences;
+import com.bosch.de.istar.commonlib.CommonFuncts;
+import com.ibm.team.filesystem.client.FileSystemException;
+import com.ibm.team.filesystem.client.IShare;
+import com.ibm.team.filesystem.client.IShareable;
+import com.ibm.team.filesystem.client.ISharingDescriptor;
+import com.ibm.team.filesystem.client.internal.TempHelper;
+import com.ibm.team.filesystem.client.internal.copyfileareas.CopyFileAreaUtil;
+import com.ibm.team.filesystem.rcp.core.internal.FileSystemResourcesPlugin;
+import com.ibm.team.filesystem.rcp.core.internal.changes.model.IComponentSyncContext;
+import com.ibm.team.filesystem.rcp.core.internal.changes.model.IComponentSyncModel;
+import com.ibm.team.foundation.common.util.Adapters;
+import com.ibm.team.repository.client.ITeamRepository;
+import com.ibm.team.repository.common.IItemHandle;
+import com.ibm.team.repository.common.TeamRepositoryException;
+import com.ibm.team.scm.client.IConnection;
+import com.ibm.team.scm.client.IWorkspaceConnection;
+import com.ibm.team.scm.client.IWorkspaceManager;
+import com.ibm.team.scm.client.SCMPlatform;
+import com.ibm.team.scm.common.IComponentHandle;
+import com.ibm.team.scm.common.IContextHandle;
+import com.ibm.team.scm.common.IFlowEntry;
+
+
+public class LogHandler {
+    private static final String LINE_SEPARATOR = System.getProperty("line.separator");
+    private static FileWriter fileWriter;
+    private static BufferedWriter logContent;
+ 
+    static File logFile = null;
+    
+
+    
+    public static void initiateToCreateCombotLogFile() throws TeamRepositoryException {
+    	getIstarLogFile();
+    	writeLogFile("INFO: [Begin_Plugin_CCC]");
+    	writeLogFile("INFO: Connected RTC projects : " + getConnectedProjects());
+    	writeLogFile("INFO: [End_Plugin_CCC]" + "\n");
+    	System.out.println("CCC Log has been created successfully");
+    }
+    
+    
+    /**
+     * Get connect Project Streams name in workspace
+     * @return
+     * @throws TeamRepositoryException
+     */
+    private static String getConnectedProjects() throws TeamRepositoryException {
+        IResource selectedResource = CommonFuncts.getSelectedResource();       
+        if (selectedResource != null) {
+        	IResource resource = selectedResource.getProject();
+            boolean isRTC = CopyFileAreaUtil.isShareRoot((IResource) resource, null);
+            String streamName = "";
+            if (isRTC) {
+            	streamName = getConnectedStream(resource);
+            }     
+            return streamName;
+		}        
+        return "";	
+    }
+    
+    /**
+     * Get Istar log file
+     */
+    
+    private static void getIstarLogFile() {
+		IEclipsePreferences rootNode = Platform.getPreferencesService().getRootNode();
+		String currentIstarLog = rootNode.get("createdIstarLogPath", null);
+		if (currentIstarLog != null && !currentIstarLog.trim().isEmpty()) {
+			try {
+				fileWriter = new FileWriter(currentIstarLog,true);
+				logContent = new BufferedWriter(fileWriter);
+			}
+			catch (Exception e) {
+				
+			}
+		}
+    }
+    
+    /**
+     * Get connected stream of the project
+     * @param project
+     * @return
+     */
+    private static String getConnectedStream(IResource project) {
+    	IShareable shareable = Adapters.getAdapter(project,IShareable.class);
+		if (shareable == null) {
+			IResource resource = Adapters.getAdapter(project,IResource.class);
+			if (resource != null) {
+				shareable = (IShareable) resource.getAdapter(IShareable.class);
+			}
+		}
+		IWorkspaceConnection workspaceConnection = getContext(shareable);		
+		if (workspaceConnection != null) {
+			if (!workspaceConnection.isStream()) {
+				IFlowEntry flowEntry = workspaceConnection.getFlowTable().getCurrentDeliverFlow();
+				if (flowEntry != null) {
+					workspaceConnection = getCachedConnection(flowEntry.getFlowNode());
+				}
+			}
+			return workspaceConnection.getName();
+		}
+		return "";
+    }
+    
+    /**
+     * Get cached connection 
+     * @param contextHandle
+     * @return
+     */
+	private static IWorkspaceConnection getCachedConnection(IItemHandle contextHandle) {
+		ITeamRepository repository = (ITeamRepository) contextHandle.getOrigin();
+        IWorkspaceManager workspaceManager = SCMPlatform.getWorkspaceManager(repository);
+        if (workspaceManager != null) {
+            return workspaceManager.getKnownWorkspaceConnection(contextHandle);
+        }
+        return null;
+    }
+	
+	/**
+	 * Get context
+	 * @param shareable
+	 * @return
+	 */
+	private static IWorkspaceConnection getContext(IShareable shareable) {   
+        IShare share;
+        try {
+            share = shareable.getShare(TempHelper.MONITOR);
+            if (share == null) {
+            	return null;
+            }  
+        } 
+        catch (FileSystemException e) {
+            throw TempHelper.throwEx(e);
+        }       
+        ISharingDescriptor sharingDescriptor = share.getSharingDescriptor();
+        IComponentHandle component = sharingDescriptor.getComponent();
+        IContextHandle workspace = sharingDescriptor.getConnectionHandle();
+        IComponentSyncModel model = FileSystemResourcesPlugin.getComponentSyncModel();
+        IComponentSyncContext[] contexts = model.getComponentSyncContexts();
+        for (int i = 0; i < contexts.length; i++) {
+            if (contexts[i].isLocal()) {
+                // the resource is shared
+                if (contexts[i].getComponent().sameItemId(component)) {
+                    IConnection connection = contexts[i].getOutgoingConnection();
+                    IContextHandle itemId = null;
+                    if (connection instanceof IWorkspaceConnection)
+                        itemId = ((IWorkspaceConnection) connection).getResolvedWorkspace();
+                    if (workspace.sameItemId(itemId)) {
+                        return ((IWorkspaceConnection) connection);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Write log file
+     * @param message
+     */
+    public static void writeLogFile(final String message) {
+        final String printableMessage = message.replace("\n", LINE_SEPARATOR);
+        try {
+            logContent.write(printableMessage);
+            logContent.newLine();
+            logContent.flush();
+        } catch (final IOException e) {
+            if (e.getMessage().contains("closed")) {
+                // stream has been already closed during shutdown
+                return;
+            }
+            System.out.println("unable to write log file");
+        }
+    }    
+}
